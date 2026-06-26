@@ -1,0 +1,372 @@
+---
+title: "Trabajo Inferencia Estadística"
+author: "Grupo alpha$"
+date: "2026-03-30"
+output:
+  pdf_document:
+    keep_tex: true
+header-includes:
+  - \usepackage{float}
+---
+
+```{r setup, include=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE)
+library(ggplot2)
+library(patchwork)
+library(magrittr)
+library(knitr)
+library(kableExtra)
+library(cowplot)
+load("Dataset/ESdEadulto_2023.RData")
+```
+
+# Relación IMC con tabaquismo
+## Filtrado mínimo de datos
+Esta primera transformación se hará sobre el conjunto de datos inicial, pues será relevante para los dos objetivos del trabajo. Por cómo han sido recogidos los datos originalmente en la encuesta original, tienen una codificación algo críptica y poco legible. Veamos cómo pasar a otra codificación más fácil de interpretar:
+```{r,echo=TRUE}
+df_micro$Sexo = ifelse(df_micro$SEXOa == 1, "Hombre", "Mujer")
+df_micro$Fuma = factor(df_micro$Q1,
+                    levels = c(1, 2, 3, 4),
+                    labels = c("Fumador diario",
+                               "Fumador ocasional",
+                               "Exfumador",
+                               "Nunca ha fumado"))
+```
+Entrando ahora en un proceso de filtrado real, vamos a eliminar aquellos individuos que no han respondido sobre su altura o peso (codificados en este caso como 999), y de los que no podremos por tanto calcular su IMC. Añadiremos una columna adicional al _DataFrame_ con el IMC de los individuos restantes:
+```{r, echo=TRUE}
+datos1 = transform(df_micro, IMC = N2/(N1/100)^2)
+# Interesante hacer el análisis para el logaritmo
+#datos1$logIMC = sapply(log, datos1$IMC)
+datos1 = datos1[datos1$N1 != 999 & datos1$N2 != 999 & datos1$Q1 != 9,
+                c("IMC", "Fuma", "Sexo")]
+```
+**Nota:** la encuesta cuenta con una variable original "IMC", pero es cualitativa ("Peso insuficiente", "Normopeso", "Sobrepeso", "Obesidad", o "No consta"). Al contar con mediciones de altura y peso de los encuestados, hemos optado por calcular el IMC cuantitativamente para un estudio más en detalle.
+
+## Análisis descriptivo y elección de metodología
+### Análisis de la distribución empírica
+Antes de decantarnos por ningún método estadístico en particular, hemos de observar qué aspecto tiene la distribución empírica del IMC. Así, podemos plantear posibles modelos paramétricos que podría seguir. Es común que las distribuciones de alturas y pesos se asemejen a distribuciones gaussianas. Veamos si ocurre lo mismo con el IMC.
+
+Al trabajar con tamaños muestrales elevados, es preferible trabajar con la varianza muestral como estimador de $\sigma^2$ en lugar de la cuasivarianza. Además de ser siempre el EMV, es asintóticamente insesgado. Debido al alto número de individuos que estamos tratando, podemos contar tanto con los beneficios de estimación máximo-verosímil como con los del sesgo asintóticamente nulo.
+
+Para estimar $\mu$, hemos optado por usar la mediana. Como veremos más adelante, la muestra presenta colas por la derecha, luego la media se ve desplazada por ellas. La mediana, al ser más robusta, supone una medida de centralidad más representativa. Veamos la comparación entre ambas para este primer ejemplo:
+
+```{r, echo=FALSE,out.width='75%',fig.align='center'}
+plotVsNorm = function(sample, xlab="x", ylab="Densidad", tlab=NULL, vsMean = FALSE) {
+  mu = median(sample)
+  sigma = sd(sample) * (length(sample) - 1) / length(sample)
+  df = data.frame(x=sample)
+  
+  colMedian = "red"
+  
+  p = ggplot(df, aes(x=x)) +
+        geom_histogram(aes(y=after_stat(density)), col="black", fill="ivory3") +
+        stat_function(fun=dnorm, args=list(mean=mu, sd=sigma), col=colMedian, lwd=1.25) +
+        labs(x=xlab, y=ylab, title=tlab)
+  
+  if(vsMean) {
+    colMean = "cyan2"
+    p = p + stat_function(fun=dnorm, args=list(mean=mu, sd=sigma), aes(color="Mediana"), lwd=1.25) +
+        stat_function(fun=dnorm, args=list(mean=mean(sample), sd=sigma), aes(color="Media"), lwd=1.25)+
+        scale_color_manual(
+          name="Estimadores",
+          labels=c(Mediana=expression(hat(mu)*" = Mediana"), Media=expression(hat(mu)*" = Media")),
+          values=c("Mediana"=colMedian,"Media"=colMean))
+  }
+  
+  return(p)
+}
+
+plotVsNorm(datos1$IMC, xlab="IMC", tlab="IMC de la muestra en conjunto", vsMean=TRUE)
+```
+
+Existe cierta asimetría por la derecha, aunque parece seguir gaussianidad.
+
+Como podemos comprobar, la mediana es un estimador más acertado en este escenario. De ahora en adelante, todas las estimaciones de parámetros $N(\mu,\sigma)$ de este objetivo se harán siguiendo esta metodología aunque no se mencione explícitamente. Hemos probado con la media y la mediana, obteniendo mejores resultados con la segunda. Hemos hecho este ajuste después de haber probado ambos (esta es una nota a posteriori), pero por simplicidad solo incluiremos el caso $\hat{\mu} =$ Mediana.
+
+Veamos si este comportamiento aparentemente normal se mantiene al filtrar por tabaquismo y por género.
+```{r,echo=FALSE,message=FALSE, out.width='85%',fig.pos='H',fig.align='center'}
+for (gen in unique(datos1$Sexo)) {
+  listaGraficos = list()
+  
+  for (fum in unique(datos1$Fuma)) {
+    submuestra = datos1[datos1$Sexo == gen & datos1$Fuma == fum, "IMC"]
+    
+    listaGraficos[[fum]] = plotVsNorm(
+      submuestra, 
+      xlab = "IMC", 
+      tlab = paste(gen, "-", fum)
+    )
+  }
+  
+  print(wrap_plots(listaGraficos, ncol = 2))
+}
+```
+
+Todos los grupos parecen poseer cierta gaussianidad, aunque podemos observar colas por la derecha. Veamos si estamos o no en el modelo paramétrico. Los test de bondad de ajuste rechazan casi siempre para tamaños muestrales altos, como es nuestro caso:
+```{r,error=TRUE,echo=TRUE}
+shapiro.test(datos1$IMC)
+```
+El propio R no nos deja siquiera intentarlo para los encuestados al completo, pues el tamaño muestral es de `r length(datos1$IMC)`, que supera con creces al máximo de 5000 permitido. Veamos si es posible calcularlo para los datos por grupos.
+
+```{r}
+calculateShaphiroValues = function () {
+  shaphiroValues = data.frame()
+  index = 1
+  for (gen in unique(datos1$Sexo)) {
+    for (fum in unique(datos1[datos1$Sexo==gen,"Fuma"])) {
+      shaphiroValues[index,"Género"] = gen
+      shaphiroValues[index,"Fuma"] = fum
+      submuestra = datos1[datos1$Fuma == fum & datos1$Sexo == gen, "IMC"]
+      shaphiroValues[index, "pValor"] = ifelse(length(submuestra) > 5000, NA,
+                                               format.pval(shapiro.test(submuestra)$p.value,
+                                                            digits = 4,
+                                                            eps = 1e-16))
+      shaphiroValues[index, "TamañoMuestral"] = length(submuestra)
+      index = index + 1
+    }
+  }
+  return(shaphiroValues)
+}
+
+kbl(calculateShaphiroValues(), booktabs = TRUE, align = "c") %>%
+  kable_styling(latex_options = c("hold_position"), full_width = F)
+```
+
+Podemos ver cómo los p-valores son inferiores a $10^{-6}$, a pesar de los resultados gráficos anteriores aparentemente favorabes. De hecho, para el caso de mujeres que nunca han fumado, no es posible calcularlo directamente. En estas condiciones, hemos de recurrir a técinas más descriptivas. Probemos con las gráficas cuantil-cuantil o _QQPlot_.
+
+```{r}
+filtrar = function(genero, fumar) {
+  datos1[datos1$Fuma == fumar & datos1$Sexo == genero, "IMC"]
+}
+```
+
+```{r}
+plotQQNorm = function(sample, xlab="Cuantiles teóricos", ylab="Cuantiles muestrales", tlab=NULL,
+                        vsMean = FALSE) {
+  alpha=ifelse(vsMean,0.5,1)
+  mu = mean(sample)
+  sigma = sd(sample) * (length(sample) - 1) / length(sample)
+  
+  p = ggplot(data.frame(sample=sample), aes(sample = sample)) +
+    stat_qq(distribution = qnorm, dparams = list(mean = mu, sd = sigma)) +
+    stat_qq_line(distribution = qnorm, dparams = list(mean = mu, sd = sigma),
+                 color = "red", lwd = 1.25, alpha=alpha) +
+    labs(x = xlab, y = ylab, title = tlab)
+  
+  if(vsMean) {
+    p = p +stat_qq_line(distribution = qnorm, dparams = list(mean = mean(sample), sd = sigma),
+                 color = "cyan2", lwd = 1.25, alpha=alpha)
+  }
+  
+  return(p)
+}
+```
+```{r, echo=FALSE, message=FALSE, out.width='80%', fig.pos='H', fig.align='center'}
+
+for (gen in unique(datos1$Sexo)) {
+  listaGraficos = list()
+  
+  for (fum in unique(datos1[datos1$Sexo==gen, "Fuma"])) {
+    submuestra = filtrar(gen, fum)
+    
+    listaGraficos[[fum]] = plotQQNorm(
+      submuestra,
+      tlab = paste(gen, "-", fum)
+    )
+  }
+  
+  print(wrap_plots(listaGraficos, ncol = 2))
+  cat("\n\n")
+}
+```
+
+Parecen seguir distribuciones normales, aunque con colas algo pronunciadas, sobre todo por la derecha, y más aún en el caso de las mujeres.
+
+En estas condiciones, con un modelo aparentemente normal y una clara distinción entre factor (género y hábitos de fumar) versus respuesta (IMC), cabe preguntarnos si estamos ante las hipótesis necesarias para aplicar ANOVA. Veamos si tienen varianzas similares.
+
+### Estudio de varianzas por grupos
+Veamos qué varianzas tiene el IMC en cada grupo:
+```{r}
+fillVars = function() {
+  VARs = data.frame()
+  index = 1
+  for (gen in unique(datos1$Sexo)) {
+    for (fum in unique(datos1[datos1$Sexo==gen, "Fuma"])) {
+      VARs[index,"Género"] = gen
+      VARs[index,"Fuma"] = fum
+      subSample = datos1[datos1$Fuma == fum & datos1$Sexo == gen, "IMC"]
+      VARs[index,"Varianza"] = var(subSample) * (length(subSample) - 1) / length(subSample)
+      VARs[index, "Media"] = mean(subSample)
+      VARs[index, "Mediana"] = median(subSample)
+      VARs[index, "n"] = length(subSample)
+      
+      index = index + 1
+    }
+  }
+  return(VARs)
+}
+
+kbl(fillVars(), booktabs = TRUE, align = "c") %>%
+  kable_styling(latex_options = c("hold_position"), full_width = F)
+```
+Podemos notar una clara diferencia entre grupos de hombres y mujeres. Los hombres tienen varianzas grupales menores, y más homogéneas entre sí. Las mujeres, en cambio, presentan varianzas más dispares y más altas (salvo las fumadoras ocasionales).
+
+Veamos qué nos pueden decir los test de igualdad de varianzas. Tal y como hemos podido comprobar en las sesiones de prácticas de la asignatura, el test de Bartlett es extremadamente sensible a la falta de normalidad. Puesto que nuestros datos presentan algo de asimetría por la derecha, usaremos el test de Levene, más robusto en estos casos.
+
+```{r, include=TRUE}
+levene = car::leveneTest(IMC ~ Fuma, data = datos1[datos1$Sexo=="Hombre",])
+paste("p-valor para los hombres:",levene$`Pr(>F)`[1])
+levene = car::leveneTest(IMC ~ Fuma, data = datos1[datos1$Sexo=="Mujer",])
+paste("p-valor para las mujeres:",levene$`Pr(>F)`[1])
+```
+Los grupos de los hombres parecen tener varianzas equilibradas, a diferencia de los grupos de las mujeres. No obstante, ya hemos comprobado anteriormente que los test de contrastes de hipótesis pueden ser demasiado estrictos ante tamaños muestrales elevados. Así, veamos por métodos más descriptivos las desviaciones dentro de grupos:
+```{r}
+# Paleta fija por categoría
+categorias = unique(datos1$Fuma)
+colores_fijos = setNames(
+  scales::hue_pal()(length(categorias)),
+  categorias
+)
+```
+
+
+```{r,echo=FALSE,message=FALSE, out.width='95%',fig.pos='H',fig.align='center'}
+boxPlotGenero = function(genero) {
+  ggplot(data = datos1[datos1$Sexo == genero, ], aes(x = IMC)) +
+    geom_boxplot(aes(fill = Fuma)) +
+    scale_fill_manual(values = colores_fijos) +
+    labs(title = paste0("IMC con Género = ", genero)) +
+    theme(plot.margin = margin(10, 10, 10, 10))  # más aire alrededor
+}
+
+plotBoxesGenero = function(nCols) {
+  listaBoxPlots = list()
+  
+  for (genero in unique(datos1$Sexo)) {
+    listaBoxPlots[[genero]] = boxPlotGenero(genero)
+  }
+  
+  print(
+    wrap_plots(listaBoxPlots, ncol = nCols) +
+      plot_layout(guides = "collect") &
+      theme(legend.position = "bottom")  # mejor que a la derecha
+  )
+  
+  cat("\n")
+}
+
+plotBoxesGenero(2)
+```
+
+
+Entre los subgrupos de hombres, tanto el ancho de las cajas como de los bigotes parecen ser homogéneos. En cambio, el grupo de fumadoras ocasionales presenta anchos claramente distintos al resto de grupos de mujeres. Concluimos que los hombres presentan homocedasticidad, pudiendo hacer un ANOVA tradicional; pero las mujeres no. Hemos de recurrir al ANOVA de Welch, cuyo fundamento explicaremos al final de este objetivo.
+
+**Nota:** hemos probado a reestructurar los grupos de tabaquismo en mujeres con el fin de obtener varianzas similares entre los nuevos grupos y aplicar ANOVA tradicional sobre ellos. Por ejemplo, agrupar "Fumador diario" y "Fumador ocasional" en una nueva categoría "Fumador" (y otras combinaciones). No obstante, no hemos podido encontrar ningúna combinación intuitiva que cumpliera este requisito. Optamos entonces por aplicar ANOVA de Welch, que es más robuto cuando se dan simultáneamente varianzas y tamaños desequilibrados entre subgrupos, como en nuestro caso.
+
+
+## ANOVA
+Puesto que los datos provienen de la encuesta nacional española de salud para adultos de 2023, una fuente fiable, podemos asegurar por la metodología de encuestar que el IMC es independiente entre los distintos subgrupos de género y tabaquismo. Por todo lo anterior, estamos en condiciones de aplicar ANOVA (ya sea el tradicional o el de Welch, según el caso). Consideramos un nivel de significación $\alpha = 0.05$.
+
+### AONVA tradicional sobre los hombres
+Como los subgrupos de hombres presentan homeostadicidad entre ellos, usaremos un ANOVA tradicional:
+```{r,include=TRUE,echo=TRUE}
+anova = aov(IMC ~ Fuma, datos1[datos1$Sexo=="Hombre",])
+summary(anova)
+```
+El análisis de varianza nos da un p-valor menor que $10^{-10}$ para la igualdad de medias entre grupos. No obstante, podría tratarse de un resultado que, aun siendo estadísticamente significativo, no supone una diferencia práctica. Pasemos al contraste a posteriori por parejas para obtener más detalles sobre las comparativas:
+```{r,echo=FALSE,message=FALSE, out.width='75%',fig.pos='H',fig.align='center'}
+#pdf("tukeyHombres.pdf", width = 10, height = 7)
+par(mar = c(5, 16, 4, 2))
+tukey = TukeyHSD(anova)
+comparaciones = rownames(tukey[[1]])
+pvals = tukey[[1]][, "p adj"]
+
+# Capturamos el plot para leer el orden real del eje Y
+plot(tukey, las = 2, yaxt = "n")  # yaxt="n" suprime el eje Y original
+
+# El orden interno de plot.TukeyHSD es simplemente el inverso del orden de las filas
+orden_real = rev(seq_along(comparaciones))
+
+labelsY = paste0(comparaciones[orden_real], "\n  (p: ",
+                 format.pval(pvals[orden_real], digits = 4, eps = 1e-16),
+                 ")  ")
+
+axis(2, at = seq_along(comparaciones), labels = labelsY, las = 2, cex.axis = 0.8)
+```
+
+Grafiquemos diagramas de cajas de las parejas con diferencias estadísticamente significativas para observar con mayor detalle.
+```{r,echo=FALSE,message=FALSE, out.width='75%', fig.pos='H', fig.align='center'}
+boxPlotPairs = function(genero, fuma1, fuma2) {
+  ggplot(
+    data = datos1[datos1$Sexo == genero & datos1$Fuma %in% c(fuma1, fuma2), ],
+    aes(x = IMC, fill = Fuma)
+  ) +
+    geom_boxplot() +
+    scale_fill_manual(values = colores_fijos) +
+    theme(legend.position = "none")
+}
+
+# Gráficos individuales sin leyenda
+plots = lapply(
+  setdiff(unique(datos1$Fuma), "Exfumador"),
+  function(fum) boxPlotPairs("Hombre", "Exfumador", fum)
+)
+
+# Plot auxiliar con TODAS las categorías, solo para extraer la leyenda completa
+plot_leyenda_completa = ggplot(
+    data = datos1[datos1$Sexo == "Hombre", ],
+    aes(x = IMC, fill = Fuma)
+  ) +
+  geom_boxplot() +
+  scale_fill_manual(values = colores_fijos) +
+  theme(legend.position = "bottom")
+
+leyenda_compartida = get_legend(plot_leyenda_completa)
+
+# Componer layout
+fila_graficos = plot_grid(plotlist = plots, nrow = 1)
+plot_grid(fila_graficos, leyenda_compartida, ncol = 1, rel_heights = c(1, 0.1))
+```
+Las cajas están muy próximas. Por tanto, los contrastes por parejas nos están detectando diferencias muy extremas entre medias, sino pequeñas diferencias que se mentienen de manera consistente en nuestros datos con tamaño muestral muy alto.
+
+### ANOVA de Welch sobre las mujeres
+Para el caso de las mujeres, no tenemos homeostadicidad, luego aplicaremos ANOVA de Welch:
+```{r, include=TRUE}
+oneway.test(IMC ~ Fuma, data = datos1[datos1$Sexo=="Mujer",], var.equal = FALSE)
+```
+De nuevo, obtenemos resultados estadísticamente significativos que rechazan la igualdad de medias entre grupos. Nótese que el número de grados de libertad del denominador no es un número entero: no es una cantidad fija, sino que depende de las observaciones muestrales. Más adelante se explicará el fundamento teórico detrás del ANOVA de Welch.
+
+Pasemos a los contrastes por parejas:
+```{r,include=TRUE}
+# Test de comparaciones múltiples de Welch
+# Usamos pool.sd = FALSE para que cada pareja use su propia varianza (Welch)
+post_hoc_welch <- pairwise.t.test(datos1$IMC, 
+                                  datos1$Fuma, 
+                                  p.adjust.method = "bonferroni", 
+                                  pool.sd = FALSE)
+# Mostrar la tabla de p-valores
+print(post_hoc_welch)
+```
+
+De nuevo, las diferencias significativas parecen venir de las exfumadoras. Hagamos los box plots para confimar:
+```{r,echo=FALSE,message=FALSE, out.width='75%', fig.pos='H', fig.align='center'}
+plots = lapply(
+  setdiff(unique(datos1$Fuma), "Exfumador"),
+  function(fum) boxPlotPairs("Mujer", "Exfumador", fum)
+)
+
+plot_leyenda_completa = ggplot(
+    data = datos1[datos1$Sexo == "Mujer", ],
+    aes(x = IMC, fill = Fuma)
+  ) +
+  geom_boxplot() +
+  scale_fill_manual(values = colores_fijos) +
+  theme(legend.position = "bottom")
+
+leyenda_compartida = get_legend(plot_leyenda_completa)
+
+fila_graficos = plot_grid(plotlist = plots, nrow = 1)
+plot_grid(fila_graficos, leyenda_compartida, ncol = 1, rel_heights = c(1, 0.1))
+```
+
+Podemos observar el mismo comportamiento que en los hombres: pequeñas diferencias detectadas de manera consistente.

@@ -1,0 +1,469 @@
+---
+title: "Objetivo 3: Análisis de la edad de inicio por género"
+author: "Mateo Rama García, Jorge Gota Ortín y Alejandra Sánchez Mayo"
+date: "2026-04-14"
+output: 
+  pdf_document:
+    keep_tex: true
+    latex_engine: pdflatex
+header-includes:
+   - \usepackage{array}
+   - \usepackage{longtable}
+   - \usepackage{booktabs}
+   - \usepackage{colortbl}
+---
+
+```{r setup, include=FALSE}
+# Esta línea es mágica: le dice a R que no pida paquetes extra a LaTeX
+options(kableExtra.latex.load_packages = FALSE)
+knitr::opts_chunk$set(
+  echo = FALSE,       # En el .tex final no queremos ver el código, solo resultados
+  warning = FALSE, 
+  message = FALSE,
+  fig.pos = "H",      # Fuerza a la imagen a quedarse donde está el texto
+  out.width = "80%",  # Tamaño óptimo para LaTeX
+  fig.align = "center"
+)
+
+library(ggplot2)
+library(dplyr)
+library(fitdistrplus)
+library(car)
+library(kableExtra)
+library(kableExtra)
+
+load("./Dataset/ESdEadulto_2023.RData")
+```
+
+# Objetivo 3
+
+## Introducción del Objetivo
+
+El tercer objetivo de este estudio consiste en analizar la edad a la que los individuos se inician en el hábito tabáquico, explorando si existen diferencias significativas según el género. Este análisis se centra únicamente en el conjunto de fumadores a diario, ya que solo se disponen datos de la edad en la que se comenzo a fumar para este subgrupo.
+
+## Preparación y Filtrado
+
+```{r}
+datos_objetivo_3 = df_micro
+
+#Recodificamos el sexo igual que antes
+datos_objetivo_3$Sexo = ifelse(datos_objetivo_3$SEXOa == 1, "Hombre", "Mujer")
+
+#Nos quedamos solo con fumadores¡a diaro
+datos_objetivo_3 = datos_objetivo_3[datos_objetivo_3$Q1==1, ]
+
+datos_objetivo_3 = datos_objetivo_3[!is.na(datos_objetivo_3$Q3) &  datos_objetivo_3$Q3 != 99, ]
+
+#Nos quedamos solo con las variables revlantes
+datos_objetivo_3 = datos_objetivo_3[, c("Q3", "Sexo")]
+
+# Renombramos variable para claridad
+colnames(datos_objetivo_3)[1] <- "Edad_inicio"
+```
+
+## Análisis descriptivo y visualización de los datos
+
+Para comprender el comportamiento de la edad de inicio al tabaquismo, comenzamos calculando los principales estadísticos descriptivos separados por género. Esto nos permitirá tener una primera intuición sobre las diferencias en la tendencia central y la dispersión entre hombres y mujeres.
+
+```{r}
+# 1. Renombramos las columnas para que luzcan perfectas en el PDF
+resumen_desc <- datos_objetivo_3 %>%
+  group_by(Sexo) %>%
+  summarise(
+    n = n(),
+    Media = round(mean(Edad_inicio), 2),
+    Mediana = median(Edad_inicio),
+    `D. Típica` = round(sd(Edad_inicio), 2),
+    Mín. = min(Edad_inicio),
+    Máx. = max(Edad_inicio)
+  )
+
+# 2. Creamos la tabla con kableExtra aplicando formato avanzado
+resumen_desc %>%
+  kable(
+    caption = "Estadísticos descriptivos de la edad de inicio al tabaquismo por género",
+    booktabs = TRUE,        # Estilo profesional (líneas horizontales limpias)
+    align = "c",            # Todo centrado
+    col.names = c("Género", "Muestra (n)", "Media", "Mediana", "Desv. Típica", "Mínimo", "Máximo")
+  ) %>%
+  kable_styling(
+    latex_options = c("hold_position"), 
+    full_width = FALSE,     # Que no se estire a toda la página si no hace falta
+    position = "center"
+  ) %>%
+  # Añadimos una línea superior de grupo para agrupar los estadísticos
+  add_header_above(c(" " = 2, "Medidas de Tendencia Central" = 2, "Dispersión y Rangos" = 3)) %>%
+  # Ponemos la primera columna en negrita
+  column_spec(1, bold = TRUE, border_right = TRUE) %>%
+  # Destacamos la columna de la Mediana (la más importante en datos asimétricos)
+  column_spec(4, background = "#f2f2f2")
+```
+
+Dada la naturaleza de la variable "edad de inicio", la cual se registra habitualmente en años cumplidos como números enteros, se procedió a complementar el estudio mediante el ajuste de modelos de probabilidad discretos, específicamente las distribuciones de Poisson y Binomial Negativa. Mientras que el modelo de Poisson resultó ser demasiado restrictivo al asumir que la media y la varianza deben ser iguales, la Binomial Negativa demostró una capacidad superior para capturar la sobredispersión presente en la muestra. Esta flexibilidad es fundamental en este análisis, ya que permite modelar con mayor precisión la "cola larga" de la distribución provocada por los valores atípicos, es decir, aquellos individuos que inician el hábito tabáquico en edades muy avanzadas, a diferencia de la gran mayoría que se concentra en la adolescencia.
+
+```{r}
+library(fitdistrplus)
+library(ggplot2)
+library(dplyr)
+# 1. Separamos los datos por género
+datos_H <- filter(datos_objetivo_3, Sexo == "Hombre")
+datos_M <- filter(datos_objetivo_3, Sexo == "Mujer")
+library(fitdistrplus)
+library(ggplot2)
+library(dplyr)
+
+# 1. Ajuste de modelos discretos
+fit_nb_H <- fitdist(datos_H$Edad_inicio, "nbinom")
+fit_p_H  <- fitdist(datos_H$Edad_inicio, "pois")
+
+params_H_nb <- list(size = fit_nb_H$estimate["size"], mu = fit_nb_H$estimate["mu"])
+params_H_p  <- list(lambda = fit_p_H$estimate["lambda"])
+
+fit_nb_M <- fitdist(datos_M$Edad_inicio, "nbinom")
+fit_p_M  <- fitdist(datos_M$Edad_inicio, "pois")
+
+params_M_nb <- list(size = fit_nb_M$estimate["size"], mu = fit_nb_M$estimate["mu"])
+params_M_p  <- list(lambda = fit_p_M$estimate["lambda"])
+
+# 2. Preparación de datos (evaluados en números enteros exactos)
+rango_edades <- seq(min(datos_objetivo_3$Edad_inicio), max(datos_objetivo_3$Edad_inicio))
+
+df_discreto <- expand.grid(
+  Edad = rango_edades,
+  Sexo = c("Hombre", "Mujer"),
+  Distribucion = c("Binomial Negativa", "Poisson")
+) %>%
+  mutate(Prob = case_when(
+    Sexo == "Hombre" & Distribucion == "Binomial Negativa" ~ dnbinom(Edad, size = params_H_nb$size, mu = params_H_nb$mu),
+    Sexo == "Mujer"  & Distribucion == "Binomial Negativa" ~ dnbinom(Edad, size = params_M_nb$size, mu = params_M_nb$mu),
+    Sexo == "Hombre" & Distribucion == "Poisson"           ~ dpois(Edad, lambda = params_H_p$lambda),
+    Sexo == "Mujer"  & Distribucion == "Poisson"           ~ dpois(Edad, lambda = params_M_p$lambda)
+  ))
+
+# 3. Construimos el gráfico facetado por género con el formato original
+ggplot() +
+  # Histograma base facetado calcado de tu código
+  geom_histogram(data = datos_objetivo_3, aes(x = Edad_inicio, y = after_stat(density)), 
+                 bins = 20, fill = "ivory3", color = "black", alpha = 0.5) +
+  facet_wrap(~Sexo) +
+  
+  # Líneas uniendo los puntos
+  geom_line(data = df_discreto, 
+            aes(x = Edad, y = Prob, color = Distribucion, linetype = Distribucion), 
+            linewidth = 1.1) +
+  # Puntos discretos
+  geom_point(data = df_discreto, 
+             aes(x = Edad, y = Prob, color = Distribucion), 
+             size = 1.5) +
+  
+  # Configuración estética calcada de tu código original
+  scale_color_manual(name = "Distribuciones",
+                     values = c("Binomial Negativa" = "purple3", "Poisson" = "red3")) +
+  scale_linetype_manual(name = "Distribuciones",
+                        values = c("Binomial Negativa" = "solid", "Poisson" = "dotdash")) +
+  labs(title = "Ajuste de distribuciones discretas por género",
+       x = "Edad de inicio (años)",
+       y = "Densidad") +
+  theme_gray() +
+  theme(legend.position = "bottom")
+
+```
+
+A nivel visual, es fundamental comprobar si la distribución es simétrica o si presenta asimetrías (colas), así como la presencia de valores atípicos (*outliers*). Para ello, en la Figuras 1 y 2 superponen las curvas de densidad empírica junto con sus correspondiente distribución normal teórica, lo que permite evaluar visualmente el ajuste a la normalidad. Por su parte, la Figura 3 muestra los diagramas de caja para analizar en detalle la dispersión de cada grupo.
+
+```{r,warning=FALSE}
+library(ggplot2)
+library(dplyr)
+
+# ------------------------------------------------------------------------------
+# 1. HISTOGRAMA POR GÉNERO CON CURVA NORMAL
+# ------------------------------------------------------------------------------
+# Calculamos la media y desviación por sexo para que las curvas encajen perfecto
+params <- datos_objetivo_3 %>%
+  group_by(Sexo) %>%
+  summarise(m = mean(Edad_inicio), s = sd(Edad_inicio))
+
+ggplot(datos_objetivo_3, aes(x = Edad_inicio)) +
+  # Histograma de densidad (importante para que la curva normal sea comparable)
+  geom_histogram(aes(y = after_stat(density), fill = Sexo), 
+                 bins = 30, color = "black", alpha = 0.4) +
+  # Separamos en dos paneles: Hombre y Mujer
+  facet_wrap(~Sexo) +
+  # Curva Normal para Hombres (usando sus estadísticos reales)
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dnorm, args = list(mean = params$m[params$Sexo=="Hombre"], 
+                                         sd = params$s[params$Sexo=="Hombre"]), 
+                color = "red", linewidth = 1) +
+  # Curva Normal para Mujeres (usando sus estadísticos reales)
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dnorm, args = list(mean = params$m[params$Sexo=="Mujer"], 
+                                         sd = params$s[params$Sexo=="Mujer"]), 
+                color = "red", linewidth = 1) +
+  scale_fill_manual(values = c("Hombre" = "#6ac9d5", "Mujer" = "#d5956a")) +
+  labs(title = "Edad de Inicio vs. Normal Teórica por Género",
+       x = "Edad de inicio (años)", y = "Densidad") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# ------------------------------------------------------------------------------
+# 2. DIAGRAMA DE CAJAS (BOXPLOT) POR GÉNERO
+# ------------------------------------------------------------------------------
+ggplot(datos_objetivo_3, aes(x = Sexo, y = Edad_inicio, fill = Sexo)) +
+  geom_boxplot(alpha = 0.7, outlier.colour = "red", outlier.size = 2) +
+  scale_fill_manual(values = c("Hombre" = "#6ac9d5", "Mujer" = "#d5956a")) +
+  labs(title = "Dispersión y Valores Atípicos por Género",
+       x = "Género", y = "Edad de inicio (años)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+La superposición de la curva normal teórica sobre el histograma empírico evidencia de forma visual que la edad de inicio no sigue una distribución gaussiana. La distribución presenta una fuerte asimetría positiva (sesgo hacia la derecha), ya que la media es superior a la mediana en ambos géneros
+
+El diagrama de caja confirma esta asimetría y revela la existencia de una "cola poblacional" importante. Aunque el 50% central de los individuos comienza a fumar en la adolescencia (entre los 15 y los 20 años), existe un gran número de valores atípicos superiores (*outliers*), llegando a registrarse edades de inicio por encima de los 60 años.
+
+Tanto la media (18.59 frente a 17.42) como la mediana (18 frente a 17) sugieren que las mujeres tienden a iniciarse en el hábito tabáquico a una edad ligeramente superior que los hombres.
+
+## Ajuste de Distribuciones Probabilísticas
+
+Dada la evidente asimetría positiva observada en las curvas de densidad, el siguiente paso es identificar qué modelo paramétrico describe mejor el comportamiento empírico de la edad de inicio en la población fumadora. Para ello, compararemos tres distribuciones habitualmente utilizadas para modelar tiempos o edades con sesgo hacia la derecha: Weibull, Gamma y Lognormal.
+
+Para el estudio de la edad de inicio al tabaquismo, se seleccionaron las distribuciones **Weibull, Gamma y Lognormal** como candidatas para el ajuste paramétrico. La elección de estas familias responde a la naturaleza de la variable: la edad de inicio es una variable cuantitativa estrictamente positiva que, por definición demográfica, presenta una fuerte asimetría a la derecha (pocas personas inician el hábito en edades muy avanzadas en comparación con la adolescencia).
+
+Se eligieron estas tres distribuciones porque son las mejores para medir "tiempos de espera". La **Weibull** ayuda a ver cómo aparece un hábito a lo largo del tiempo; la **Gamma** es ideal cuando los datos están descompensados hacia un lado; y la **Lognormal** es el modelo clásico de toda la vida para estudiar a qué edad la gente empieza a hacer algo.
+
+```{r,warning=FALSE}
+library(fitdistrplus)
+library(ggplot2)
+library(dplyr)
+
+# 1. Separamos los datos por género
+datos_H <- filter(datos_objetivo_3, Sexo == "Hombre")
+datos_M <- filter(datos_objetivo_3, Sexo == "Mujer")
+
+# 2. Ajustamos las distribuciones para HOMBRES (añadimos la Normal)
+fit_w_H  <- fitdist(datos_H$Edad_inicio, "weibull")
+fit_g_H  <- fitdist(datos_H$Edad_inicio, "gamma")
+fit_ln_H <- fitdist(datos_H$Edad_inicio, "lnorm")
+fit_n_H  <- fitdist(datos_H$Edad_inicio, "norm") # Normal Hombre
+
+params_H_w  <- list(shape = fit_w_H$estimate["shape"], scale = fit_w_H$estimate["scale"])
+params_H_g  <- list(shape = fit_g_H$estimate["shape"], rate = fit_g_H$estimate["rate"])
+params_H_ln <- list(meanlog = fit_ln_H$estimate["meanlog"], sdlog = fit_ln_H$estimate["sdlog"])
+params_H_n  <- list(mean = fit_n_H$estimate["mean"], sd = fit_n_H$estimate["sd"]) # Parámetros Normal Hombre
+
+# 3. Ajustamos las distribuciones para MUJERES (añadimos la Normal)
+fit_w_M  <- fitdist(datos_M$Edad_inicio, "weibull")
+fit_g_M  <- fitdist(datos_M$Edad_inicio, "gamma")
+fit_ln_M <- fitdist(datos_M$Edad_inicio, "lnorm")
+fit_n_M  <- fitdist(datos_M$Edad_inicio, "norm") # Normal Mujer
+
+params_M_w  <- list(shape = fit_w_M$estimate["shape"], scale = fit_w_M$estimate["scale"])
+params_M_g  <- list(shape = fit_g_M$estimate["shape"], rate = fit_g_M$estimate["rate"])
+params_M_ln <- list(meanlog = fit_ln_M$estimate["meanlog"], sdlog = fit_ln_M$estimate["sdlog"])
+params_M_n  <- list(mean = fit_n_M$estimate["mean"], sd = fit_n_M$estimate["sd"]) # Parámetros Normal Mujer
+
+# 4. Construimos el gráfico facetado por género (lo guardamos en un objeto 'p')
+p <- ggplot(datos_objetivo_3, aes(x = Edad_inicio)) +
+  # Histograma base facetado
+  geom_histogram(aes(y = after_stat(density)), 
+                 bins = 20, fill = "ivory3", color = "black", alpha = 0.5) +
+  facet_wrap(~Sexo) +
+  
+  # --- CURVAS PARA HOMBRES ---
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dweibull, args = params_H_w, aes(color = "Weibull", linetype = "Weibull"), linewidth = 0.8) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dgamma, args = params_H_g, aes(color = "Gamma", linetype = "Gamma"), linewidth = 0.8) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dlnorm, args = params_H_ln, aes(color = "Lognormal", linetype = "Lognormal"), linewidth = 1.1) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dnorm, args = params_H_n, aes(color = "Normal", linetype = "Normal"), linewidth = 0.8) +
+  
+  # --- CURVAS PARA MUJERES ---
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dweibull, args = params_M_w, aes(color = "Weibull", linetype = "Weibull"), linewidth = 0.8) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dgamma, args = params_M_g, aes(color = "Gamma", linetype = "Gamma"), linewidth = 0.8) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dlnorm, args = params_M_ln, aes(color = "Lognormal", linetype = "Lognormal"), linewidth = 1.1) +
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dnorm, args = params_M_n, aes(color = "Normal", linetype = "Normal"), linewidth = 0.8) +
+  
+  # Configuración estética
+  scale_color_manual(name = "Distribuciones",
+                     values = c("Weibull" = "#d5956a", "Gamma" = "#6ad578", 
+                                "Lognormal" = "cyan2", "Normal" = "red")) +
+  scale_linetype_manual(name = "Distribuciones",
+                        values = c("Weibull" = "dashed", "Gamma" = "dotdash", 
+                                   "Lognormal" = "solid", "Normal" = "longdash")) +
+  labs(title = "Ajuste de distribuciones continuas por género",
+       x = "Edad de inicio (años)",
+       y = "Densidad") +
+  theme_gray() +
+  theme(legend.position = "bottom") 
+
+# Mostrar el gráfico en la consola/RStudio
+print(p)
+
+# 5. Guardar el gráfico automáticamente (en PDF y en alta calidad)
+ggsave(filename = "histograma_edad_inicio_teoricas.pdf", 
+       plot = p, 
+       width = 10, 
+       height = 6, 
+       dpi = 300)
+```
+
+A partir de la observación visual del gráfico anterior, resulta evidente que no todos los modelos teóricos logran adaptarse con el mismo éxito a la forma real de nuestros datos (representada por las barras del histograma):
+
+-   **El modelo Weibull** (línea discontinua naranja) resulta demasiado plano. No logra capturar en absoluto el enorme "pico" de personas que se inician en el tabaquismo entre los 15 y los 20 años, por lo que queda descartado visualmente.
+
+-   **El modelo Gamma** (línea punteada verde) se aproxima bastante más a la realidad, pero se queda algo corto en la parte más alta de la campana.
+
+-   **El modelo Lognormal** (línea continua cyan) es, a simple vista, el que mejor dibuja el perfil de la muestra. Logra trazar la subida repentina que ocurre en la adolescencia (la moda) y, a su vez, desciende suavemente acompañando la "cola" de personas que empiezan a fumar en edades más maduras.
+
+## Contrastes por género
+
+Habiendo demostrado visual y analíticamente que la edad de inicio se ajusta óptimamente a una distribución lognormal $X \sim Lognormal(\mu,\sigma)$, podemos hacer uso de una propiedad probabilística fundamental: si una variable aleatoria $X$ es lognormal, su transformación logarítmica natural sigue una distribución normal:
+
+$$
+Y = ln(X)
+$$
+
+Esta transformación es clave para nuestra metodología, ya que nos permite abandonar las pruebas no paramétricas (que suelen tener menor potencia estadística) y regresar al terreno de la estadística paramétrica para aplicar un Análisis de la Varianza (ANOVA). No obstante, para que los resultados del ANOVA sean válidos, debemos verificar que la variable transformada Y satisface los supuestos fundamentales
+
+#### Independencia
+
+El supuesto de independencia asume que las observaciones de la muestra no están correlacionadas entre sí. Puesto que los datos han sido extraídos de la Encuesta Nacional de Salud de España (ENSE) para adultos de 2023, cuyo diseño metodológico se basa en un muestreo probabilístico y estratificado riguroso, podemos asegurar la ausencia de sesgos de selección. En consecuencia, la edad de inicio en el tabaquismo de un individuo no influye ni está condicionada por la de los demás, garantizando que las observaciones son mutuamente independientes tanto a nivel global como al separar la muestra en los subgrupos de género..
+
+#### Normalidad
+
+El cumplimiento de este supuesto para la variable original fue descartado debido a su marcada asimetría positiva. Sin embargo, al transformar la variable mediante el logaritmo natural, la nueva variable Y satisface la condición: $$
+Y \sim \mathcal{N}(\mu_y,\sigma_y^2)
+$$ Este cambio de variable permite cumplir con la normalidad exigida para realizar inferencia paramétrica.
+
+### Homocedasticidad
+
+La homocedasticidad requiere que la varianza de la variable dependiente sea constante entre los grupos comparados. Para contrastar analíticamente este supuesto, emplearemos el Test de Levene, planteando las siguientes hipótesis: $$
+\begin{cases}
+H_0 : \sigma^2_{\text{Hombre}} = \sigma^2_{\text{Mujer}}  \\
+H_1 : \sigma^2_{\text{Hombre}} \neq \sigma^2_{\text{Mujer}}
+\end{cases}
+$$
+
+A diferencia de otras alternativas como el test de Bartlett, el test de Levene es más robusto frente a desviaciones de la normalidad, lo que lo hace idóneo para nuestra muestra.
+
+```{r}
+# 1. Transformación logarítmica para normalizar la distribución
+datos_objetivo_3$Log_Edad <- log(datos_objetivo_3$Edad_inicio)
+shapiro.test(datos_objetivo_3$Log_Edad)
+
+params <- datos_objetivo_3 %>%
+  group_by(Sexo) %>%
+  summarise(m = mean(Log_Edad), s = sd(Log_Edad))
+# Definición de colores institucionales (basados en tu preámbulo LaTeX)
+azulSuave <- "#6ac9d5"
+naranjaSuave <- "#d5956a"
+
+
+ggplot(datos_objetivo_3, aes(x = Log_Edad)) +
+  # Histograma base: Color grisáceo (ivory3) para las barras como en el gráfico 1
+  # pero usando el fill por Sexo con los colores institucionales
+  geom_histogram(aes(y = after_stat(density), fill = Sexo), 
+                 bins = 20, color = "black", alpha = 0.5) +
+  
+  # Facetado por género
+  facet_wrap(~Sexo) +
+  
+  # Curva Normal Teórica para Hombres
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Hombre"),
+                fun = dnorm, 
+                args = list(mean = params$m[params$Sexo=="Hombre"], 
+                            sd = params$s[params$Sexo=="Hombre"]), 
+                aes(color = "Normal Teórica"), linewidth = 1.1) +
+  
+  # Curva Normal Teórica para Mujeres
+  stat_function(data = filter(datos_objetivo_3, Sexo == "Mujer"),
+                fun = dnorm, 
+                args = list(mean = params$m[params$Sexo=="Mujer"], 
+                            sd = params$s[params$Sexo=="Mujer"]), 
+                aes(color = "Normal Teórica"), linewidth = 1.1) +
+  
+  # Configuración manual de colores y leyenda
+  scale_fill_manual(values = c("Hombre" = azulSuave, "Mujer" = naranjaSuave)) +
+  scale_color_manual(name = "Validación", values = c("Normal Teórica" = "red")) +
+  
+  # Títulos y estilo visual idéntico al gráfico 1
+  labs(title = "Validación de Normalidad tras Transformación Logarítmica",
+       x = "Log(Edad de inicio)", 
+       y = "Densidad") +
+  theme_gray() +  # Fondo gris clásico de ggplot2 para uniformidad
+  theme(legend.position = "bottom",
+        strip.background = element_rect(fill = "white"),
+        strip.text = element_text(face = "bold"))
+
+
+# 2. Ejecución del Test de Levene
+levenetest <- leveneTest(Log_Edad ~ Sexo, data = datos_objetivo_3)
+cat("p-valor para el Test de Levene", levenetest$`Pr(>F)`, "\n")
+```
+
+Debido a que el p-valor resultante del test de homogeneidad es inferior a nuestro nivel de significación ($\alpha$=0.05), rechazamos la hipótesis nula y, por tanto, asumimos que las varianzas poblacionales de los grupos son distintas (heterocedasticidad).
+
+Para dar cuenta de esta diferencia de varianzas, aplicaremos la prueba t de Welch en lugar de la prueba t de Student clásica, ejecutando el siguiente contraste de hipótesis:
+
+```{r}
+test_welch <- t.test(Log_Edad ~ Sexo, 
+                          data = datos_objetivo_3, 
+                          var.equal = FALSE)
+test_welch
+cat(sprintf(
+  "Comparación de Medias (Welch): p-valor %s. IC 95%%: [%.1f, %.1f].\n",
+  format.pval(test_welch$p.value, digits = 3, eps = 0.001), # P-valor
+  test_welch$conf.int[1],        # Límite inferior IC
+  test_welch$conf.int[2]         # Límite superior IC (sin la coma final)
+))
+```
+
+Al ser este valor significativamente inferior a nuestro nivel de confianza $(\alpha=0.05)$, rechazamos la hipótesis nula de igualdad de medias. Por tanto, podemos afirmar que **existen diferencias significativas en la edad de inicio al tabaquismo entre hombres y mujeres**.
+
+### Interpretación Final: La Media Geométrica
+
+Para interpretar estos resultados en la escala original (años), no utilizamos la media aritmética simple, ya que la asimetría positiva de los datos la desplazaría artificialmente hacia valores más altos. En su lugar, utilizamos la **Media Geométrica**, calculada deshaciendo la transformación logarítmica:
+
+$$
+\bar{x}_G = e^{\bar{y}} = exp \left(\frac{1}{n} \sum_{i = 1}^n ln(x_i)\right)
+$$
+
+Esta decisión se justifica por tres motivos fundamentales:
+
+1.  **Robustez ante Outliers:** Al trabajar con logaritmos, "comprimimos" la influencia de los fumadores que iniciaron el hábito en edades muy tardías, evitando que inflen la media.
+
+2.  **Propiedad Lognormal:** En una distribución lognormal, la media geométrica coincide con la **mediana teórica**, siendo el estimador más representativo del "sujeto típico".
+
+3.  **Precisión Científica:** Refleja con mayor fidelidad el comportamiento central de la muestra en variables de tiempo o edad con sesgo a la derecha.
+
+```{r}
+# Tabla de resultados finales con Media Geométrica
+resultados_finales <- datos_objetivo_3 %>%
+  group_by(Sexo) %>%
+  summarise(
+    n = n(),
+    Media_Log = round(mean(Log_Edad), 3),
+    Media_Geometrica = round(exp(mean(Log_Edad)), 2)
+  )
+
+kable(resultados_finales, 
+      caption = "Comparativa de la Edad de Inicio (Media Geométrica por Género)",
+      booktabs = TRUE, align = "c",
+      col.names = c("Género", "Muestra (n)", "Media Logarítmica", "Media Geométrica (Años)")) %>%
+  kable_styling(latex_options = c("hold_position")) %>%
+  column_spec(4, bold = TRUE, background = "#F9F9F9")
+
+cat(sprintf(
+  "Media Geométrica: Hombres %.1f años, Mujeres %.1f años.\n",
+  resultados_finales$Media_Geometrica[resultados_finales$Sexo == "Hombre"],
+  resultados_finales$Media_Geometrica[resultados_finales$Sexo == "Mujer"]
+))
+```
+
+El análisis estadístico confirma que la edad de inicio en el hábito tabáquico difiere significativamente según el género $(p<0.001)$. La media geométrica revela que la población masculina tiende a iniciarse aproximadamente un año antes (17.00 años) que la femenina (17.96 años). No obstante, dada la magnitud de la muestra, es importante notar que aunque la diferencia es estadísticamente robusta, ambas poblaciones se concentran en la etapa de la adolescencia tardía.
