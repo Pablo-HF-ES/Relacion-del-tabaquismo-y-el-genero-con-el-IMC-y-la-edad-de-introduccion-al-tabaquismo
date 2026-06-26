@@ -1,0 +1,2 @@
+# Relacion-del-tabaquismo-y-el-genero-con-el-IMC-y-la-edad-de-introduccion-al-tabaquismo
+Análisis estadístico e inferencia en R (ENSE 2023). Aplica Data Wrangling, feature engineering, ANOVA robusto (Welch) y modelado paramétrico Lognormal sobre tabaquismo e IMC. Destaca el rigor matemático frente a heterocedasticidad y asimetrías. Sólidos fundamentos de datos para Machine Learning y Data Science.
